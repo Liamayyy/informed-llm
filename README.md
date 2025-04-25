@@ -91,36 +91,29 @@ Here we will outline the installation requirements for our code once you have lo
 Make sure to install the necessary VSCode Jupyter extension so that you will have access to a Jupyter kernel to run your code on.
 
 ## Setup Fine-Tuning Miniconda Enviroment:
-This will load the Miniconda3 module from ARC, create the `fine-tuning` enviroment, and add a ipykernel so that we can run Jupyter noetbooks in this conda enviroment. This is in addition to adding .local/bin to the user's PATH variable, which is necessary for accessing binaries installed by pip.
+This will load the Miniconda3 module from ARC, create the `informed-llm` enviroment, and add a ipykernel so that we can run Jupyter noetbooks in this conda enviroment. This is in addition to adding .local/bin to the user's PATH variable, which is necessary for accessing binaries installed by pip.
 ```
 module reset &&
 export PATH=$PATH:/home/<pid>/.local/bin &&
 source ~/.bashrc &&
 module load Miniconda3 &&
-conda create -n fine-tuning python=3.11 &&
-source activate fine-tuning &&
+conda create -n informed-llm python=3.11 &&
+source activate informed-llm &&
 conda install ipykernel jupyter &&
-python -m ipykernel install --user --name=fine-tuning --display-name "Fine-Tuning Enviroment (fine-tuning)"
+python -m ipykernel install --user --name=informed-llm --display-name "Informed LLM Enviroment (informed-llm)" &&
+pip install transformers accelerate torch duckduckgo-search
 ```
 You should be able to run a Jupyter Notebook on our newly created Conda enviroment, but if you cannot select it, please complete the following steps:
 1. Open the Command Palette (Ctrl+Shift+P or Cmd+Shift+P on macOS).​
 2. Type and select Python: Select Interpreter.​
-3. Choose Fine-Tuning Enviroment (fine-tuning) from the list. 
-4. If it does not appear on the list, click on Enter interpreter path, select Find, and navigate to the `~/.conda/envs/fine-tuning/bin/python`,  your Conda environment.
+3. Choose Informed LLM Enviroment (informed-llm) from the list. 
+4. If it does not appear on the list, click on Enter interpreter path, select Find, and navigate to the `~/.conda/envs/informed-llm/bin/python`,  your Conda environment.
 
 
 To eventually remove any conda enviroment, you can do the following:
 
 ```
-conda env remove --name fine-tuning (or another enviroment name)
-```
-
-## Clone Repositories:
-```
-git clone https://github.com/Liamayyy/team5-capstone.git &&
-cd team5-capstone &&
-cd fine-tuning &&
-git clone https://github.com/axolotl-ai-cloud/axolotl.git
+conda env remove --name informed-llm (or another enviroment name)
 ```
 
 # Cluster Node Installation Requirements
@@ -134,16 +127,7 @@ module reset &&
 export PATH=$PATH:/home/<pid>/.local/bin &&
 source ~/.bashrc &&
 module load Miniconda3 &&
-source activate fine-tuning
-```
-
-## Instaall Axolotl
-Make sure you are inside the main axolotl repository or this will not work.
-```
-pip3 install torch &&
-pip3 install -U packaging setuptools wheel &&
-pip3 install --no-build-isolation -e '.[flash-attn,deepspeed]' &&
-conda install jupyter -y
+source activate informed-llm
 ```
 ## Hugging Face CLI
 After installing axolotl, you will have to create a HuggingFace account if you have not already, gain access to the repository of the model that you want to use, and create an acces token for your account. When creating the access token make sure to have the option "Read access to contents of all public gated repos you can access" enabled. Afer completing these steps, you will be able to log in to HuggingFace using the following command:
@@ -153,23 +137,6 @@ huggingface-cli login
 It will prompt you for your access token, and after entering it, you should be able to use axolotl to access gated models like gemma-2-2b.
 
 Note: When prompted if you want to add the token as a git credential, I select yes.
-
-## Using Axolotl
-To get started, you can run this example to make sure everything is runnning correctly.
-```
-axolotl train /home/<pid>/team5-capstone/fine-tuning/axolotl/examples/gemma2/qlora.yml
-```
-Once this is working, most of what you will have to change in order to fine-tune will be the actual .yaml file itself.
-
-The general structure for usfine-tuning with any .yaml files is:
-```
-axolotl train path/to/file.yaml
-```
-I run the first fine-tuning example I have made with:
-```
-axolotl train /home/<pid>/team5-capstone/fine-tuning/medQuad_BioASQ_qlora.yml
-```
-For any information pertaining to the actual parameters and use of axolotl, see: https://github.com/axolotl-ai-cloud/axolotl
 
 ## Using Jupyter on the Compute Cluster (Incomplete):
 First, run these commands (in the background):
