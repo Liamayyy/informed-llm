@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Dict, List, Optional, Union
-import random
+from typing import Callable, Dict, List, Optional, Union, Any, Tuple
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from web_scraper import web_search  # polite DuckDuckGo search wrapper
@@ -18,17 +17,16 @@ def _identity(_: AncCtx, orig: InputType) -> InputType:
     return orig
 
 class Model:
-    """LLM or transform-only node inside an acyclic graph."""
+    _pipeline_cache: Dict[str, Any] = {}
 
     def __init__(
         self,
         repo: Optional[str] = None,
-        *,
         use_search: bool = False,
         instructions: Optional[str] = None,
         max_new_tokens: int = MAX_GEN_TOKENS,
-        do_sample: bool = False,
-        temperature: float = 0.0,
+        do_sample: bool = True,
+        temperature: float = 0.7,
         enforce_labels: bool = True,
         labels: List[str] = LABELS,
         children: Optional[List["Model"]] = None,
@@ -51,20 +49,28 @@ class Model:
         )
 
         if self.repo:
-            tokenizer = AutoTokenizer.from_pretrained(repo)
-            model = AutoModelForCausalLM.from_pretrained(
-                repo,
-                torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
-                device_map="auto" if DEVICE == "cuda" else None,
-            )
-            if tokenizer.pad_token_id is None:
-                tokenizer.pad_token_id = tokenizer.eos_token_id
-            model.config.pad_token_id = tokenizer.pad_token_id
-            self.generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+            if repo in Model._pipeline_cache:
+                self.generator = Model._pipeline_cache[repo]
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(repo)
+                model = AutoModelForCausalLM.from_pretrained(
+                    repo,
+                    torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
+                    device_map="auto" if DEVICE == "cuda" else None,
+                )
+                if tokenizer.pad_token_id is None:
+                    tokenizer.pad_token_id = tokenizer.eos_token_id
+                model.config.pad_token_id = tokenizer.pad_token_id
+                gen = pipeline(
+                    "text-generation",
+                    model=model,
+                    tokenizer=tokenizer,
+                )
+                Model._pipeline_cache[repo] = gen
+                self.generator = gen
         else:
             self.generator = None
 
-    # ───────────────────────── PROMPT ───────────────────────────────────
     def _build_prompt(self, claim: str, context: Optional[str] = None) -> str:
         header = f"Context:\n{context}\n\n" if context else ""
         instr = self.instructions or (
@@ -72,12 +78,11 @@ class Model:
         )
         return f"{header}{instr}\n\nClaim: {claim}\nLabel:"
 
-    # ───────────────────────── CALL ─────────────────────────────────────
     def __call__(self, orig_input: InputType, ctx: Optional[AncCtx] = None) -> Dict[str, Union[OutputType, Dict]]:
         ctx = dict(ctx or {})
         node_input = self.input_transform(ctx, orig_input)
 
-        if self.repo is None:  # transform-only ► output is ready
+        if self.repo is None:
             my_out: OutputType = node_input
         else:
             claim = node_input
@@ -90,7 +95,7 @@ class Model:
                 temperature=self.temperature,
                 clean_up_tokenization_spaces=True,
             )[0]["generated_text"]
-            continuation = raw[len(prompt) :].strip()
+            continuation = raw[len(prompt):].strip()
             if self.enforce_labels:
                 tok = continuation.split()[0].upper() if continuation else ""
                 my_out = tok if tok in self.labels else self.labels[-1]
@@ -106,12 +111,7 @@ class Model:
     def __repr__(self):
         return f"Model({self._name})"
 
-    # ───────────────────────── DSL SUPPORT ─────────────────────────────────
     def __rshift__(self, other: Union["Model", tuple]) -> None:
-        """
-        DSL: Use `parent >> child` or `parent >> (child1, child2, ... )`
-        to wire up graph edges.
-        """
         if isinstance(other, Model):
             self.children.append(other)
         elif isinstance(other, tuple):
@@ -122,6 +122,17 @@ class Model:
         else:
             raise ValueError("Right operand must be a Model or tuple of Models")
 
+    def __rrshift__(self, other: Union["Model", tuple]) -> None:
+        if isinstance(other, Model):
+            other.children.append(self)
+        elif isinstance(other, tuple):
+            for parent in other:
+                if not isinstance(parent, Model):
+                    raise ValueError("Can only shift Model instances")
+                parent.children.append(self)
+        else:
+            raise ValueError("Left operand must be a Model or tuple of Models")
+
 class ModelPipeline:
     def __init__(self, roots: List[Model]):
         if not roots:
@@ -131,18 +142,38 @@ class ModelPipeline:
     def predict(self, claim: str) -> Dict[str, Dict]:
         return {repr(r): r(claim) for r in self.roots}
 
-    def predict_label(self, claim: str) -> str:
-        return self.roots[0](claim)["output"]  # label from first root
+    def _collect_leaf_outputs(self, node_result: Dict) -> List[OutputType]:
+        if not node_result.get("children"):
+            return [node_result["output"]]
+        outs: List[OutputType] = []
+        for child_res in node_result["children"].values():
+            outs.extend(self._collect_leaf_outputs(child_res))
+        return outs
+
+    def predict_with_label(self, claim: str) -> Tuple[Dict, OutputType]:
+        """
+        Returns the full tree (for the first root) and the final label.
+        Always returns the output of the last node in a depth-first, left-to-right traversal.
+        """
+        root_key = repr(self.roots[0])
+        results = self.predict(claim)[root_key]
+        # traverse to the last node
+        node = results
+        while node.get("children"):
+            # pick the last child in insertion order
+            last_key = list(node["children"].keys())[-1]
+            node = node["children"][last_key]
+        label = node["output"]
+        return results, label
+
+    def predict_label(self, claim: str) -> Union[OutputType, List[OutputType]]:
+        tree, lbl = self.predict_with_label(claim)
+        return lbl
 
     def __repr__(self):
         return " | ".join(map(repr, self.roots))
 
-    # ───────────────────────── VISUALIZATION ────────────────────────────────
     def visualize(self, filename: str = "pipeline", format: str = "png") -> str:
-        """
-        Render graph to file using graphviz. Requires `graphviz` Python package.
-        Returns the path to the generated file (e.g., pipeline.png).
-        """
         try:
             from graphviz import Digraph
         except ImportError:
@@ -161,5 +192,4 @@ class ModelPipeline:
 
         for root in self.roots:
             add_node(root)
-        output_path = dot.render(filename, cleanup=True)
-        return output_path
+        return dot.render(filename, cleanup=True)
