@@ -101,7 +101,7 @@ conda create -n informed-llm python=3.11 &&
 source activate informed-llm &&
 conda install ipykernel jupyter &&
 python -m ipykernel install --user --name=informed-llm --display-name "Informed LLM Enviroment (informed-llm)" &&
-pip install transformers accelerate torch duckduckgo-search
+pip3 install transformers accelerate torch duckduckgo-search lm-eval tqdm
 ```
 You should be able to run a Jupyter Notebook on our newly created Conda enviroment, but if you cannot select it, please complete the following steps:
 1. Open the Command Palette (Ctrl+Shift+P or Cmd+Shift+P on macOS).​
