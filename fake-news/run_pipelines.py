@@ -4,32 +4,41 @@ import logging
 from typing import List, Dict, Union
 
 from tqdm.auto import tqdm
+from sklearn.metrics import (
+    precision_recall_fscore_support,
+    confusion_matrix,
+    classification_report,
+)
+import numpy as np
 
-from config      import MODEL_REPO_DEFAULT, EXPLAINER_REPO
+from config import MODEL_REPO_DEFAULT, EXPLAINER_REPO
 from data_loader import ds
-from model       import Model, ModelPipeline, AncCtx
+from model import Model, ModelPipeline, AncCtx
 
 
 # ────────────────────────── helpers ──────────────────────────
+
 def _normalize(_: AncCtx, txt: str) -> str:
     txt = txt.strip()
     return txt[:1].upper() + txt[1:]
 
 
-# ─────────────── debate-role system prompts (2-way) ───────────────
+# ────────────────────────── debate-role prompts ──────────────────────────
+
 _DEBATER_ROLES = {
     "FAKE": (
         "You are a fact-checking debater. Argue that the claim is FAKE. "
-        "Explain, in 1–3 paragraphs, why the headline is fabricated or misleading."
+        "Explain in 1–3 paragraphs why the headline is fabricated or misleading."
     ),
     "TRUE": (
         "You are a fact-checking debater. Argue that the claim is TRUE. "
-        "Explain, in 1–3 paragraphs, with evidence, why the headline is accurate."
+        "Explain in 1–3 paragraphs with evidence why the headline is accurate."
     ),
 }
 
 
-# ─────────────── base classifier ───────────────
+# ────────────────────────── model definitions ──────────────────────────
+
 BASE = Model(
     MODEL_REPO_DEFAULT,
     use_search=False,
@@ -38,50 +47,37 @@ BASE = Model(
     name="base-clf",
 )
 
-
-# ─────────────── debaters ───────────────
 DEB_FAKE = Model(
-    MODEL_REPO_DEFAULT,
-    instructions=_DEBATER_ROLES["FAKE"],
-    enforce_labels=False,
-    name="debater-FAKE",
+    MODEL_REPO_DEFAULT, instructions=_DEBATER_ROLES["FAKE"], enforce_labels=False, name="debater-FAKE"
 )
 DEB_TRUE = Model(
-    MODEL_REPO_DEFAULT,
-    instructions=_DEBATER_ROLES["TRUE"],
-    enforce_labels=False,
-    name="debater-TRUE",
+    MODEL_REPO_DEFAULT, instructions=_DEBATER_ROLES["TRUE"], enforce_labels=False, name="debater-TRUE"
 )
 
-# ─────────────── judge ───────────────
 JUDGE = Model(
     EXPLAINER_REPO,
     use_search=False,
     enforce_labels=True,
-    instructions=(
-        "You are an impartial fact-checking judge. Read the arguments and "
-        "output exactly one label: FAKE or TRUE."
-    ),
+    instructions="You are an impartial fact-checking judge. Choose FAKE or TRUE.",
     input_transform=lambda ctx, claim: (
         f"Headline: {claim}\n\n"
-        f"FAKE arguments:\n{ctx.get('Model(debater-FAKE)', '')}\n\n"
-        f"TRUE arguments:\n{ctx.get('Model(debater-TRUE)', '')}\n\n"
+        f"FAKE arguments:\n{ctx.get('Model(debater-FAKE)','')}\n\n"
+        f"TRUE arguments:\n{ctx.get('Model(debater-TRUE)','')}\n\n"
         "Label:"
     ),
     name="judge",
 )
 
-# ─────────────── first-response round ───────────────
+# First and second responses
 RESP1_FAKE = Model(
     MODEL_REPO_DEFAULT,
     enforce_labels=False,
     name="response1-FAKE",
-    instructions="You are the FAKE debater. Respond to the opposing side in 1–2 paragraphs.",
+    instructions="Respond defending FAKE in 1–2 paragraphs.",
     input_transform=lambda ctx, claim: (
         f"Headline: {claim}\n\n"
-        f"Initial FAKE:\n{ctx.get('Model(debater-FAKE)', '')}\n\n"
-        f"Initial TRUE:\n{ctx.get('Model(debater-TRUE)', '')}\n\n"
-        "Your reply:"
+        f"FAKE:\n{ctx.get('Model(debater-FAKE)','')}\n\n"
+        f"TRUE:\n{ctx.get('Model(debater-TRUE)','')}\n"
     ),
 )
 
@@ -89,26 +85,23 @@ RESP1_TRUE = Model(
     MODEL_REPO_DEFAULT,
     enforce_labels=False,
     name="response1-TRUE",
-    instructions="You are the TRUE debater. Respond to the opposing side in 1–2 paragraphs.",
+    instructions="Respond defending TRUE in 1–2 paragraphs.",
     input_transform=lambda ctx, claim: (
         f"Headline: {claim}\n\n"
-        f"Initial FAKE:\n{ctx.get('Model(debater-FAKE)', '')}\n\n"
-        f"Initial TRUE:\n{ctx.get('Model(debater-TRUE)', '')}\n\n"
-        "Your reply:"
+        f"FAKE:\n{ctx.get('Model(debater-FAKE)','')}\n\n"
+        f"TRUE:\n{ctx.get('Model(debater-TRUE)','')}\n"
     ),
 )
 
-# ─────────────── second-response round ───────────────
 RESP2_FAKE = Model(
     MODEL_REPO_DEFAULT,
     enforce_labels=False,
     name="response2-FAKE",
-    instructions="You are the FAKE debater. Respond again in 1–2 paragraphs.",
+    instructions="Second response for FAKE.",
     input_transform=lambda ctx, claim: (
         f"Headline: {claim}\n\n"
-        f"Resp1 FAKE:\n{ctx.get('Model(response1-FAKE)', '')}\n\n"
-        f"Resp1 TRUE:\n{ctx.get('Model(response1-TRUE)', '')}\n\n"
-        "Your reply:"
+        f"Resp1 FAKE:\n{ctx.get('Model(response1-FAKE)','')}\n\n"
+        f"Resp1 TRUE:\n{ctx.get('Model(response1-TRUE)','')}\n"
     ),
 )
 
@@ -116,27 +109,22 @@ RESP2_TRUE = Model(
     MODEL_REPO_DEFAULT,
     enforce_labels=False,
     name="response2-TRUE",
-    instructions="You are the TRUE debater. Respond again in 1–2 paragraphs.",
+    instructions="Second response for TRUE.",
     input_transform=lambda ctx, claim: (
         f"Headline: {claim}\n\n"
-        f"Resp1 FAKE:\n{ctx.get('Model(response1-FAKE)', '')}\n\n"
-        f"Resp1 TRUE:\n{ctx.get('Model(response1-TRUE)', '')}\n\n"
-        "Your reply:"
+        f"Resp1 FAKE:\n{ctx.get('Model(response1-FAKE)','')}\n\n"
+        f"Resp1 TRUE:\n{ctx.get('Model(response1-TRUE)','')}\n"
     ),
 )
 
-# ─────────────── closing remarks ───────────────
+# Closing remarks
 CLOS_FAKE = Model(
     MODEL_REPO_DEFAULT,
     enforce_labels=False,
     name="closing-FAKE",
-    instructions="You are the FAKE debater. Provide a concise closing statement.",
+    instructions="Closing remarks for FAKE.",
     input_transform=lambda ctx, claim: (
-        f"Headline: {claim}\n\n"
-        f"Initial FAKE:\n{ctx.get('Model(debater-FAKE)', '')}\n\n"
-        f"Resp1 FAKE:\n{ctx.get('Model(response1-FAKE)', '')}\n\n"
-        f"Resp2 FAKE:\n{ctx.get('Model(response2-FAKE)', '')}\n\n"
-        "Closing statement:"
+        f"Headline: {claim}\n\n{ctx.get('Model(response2-FAKE)','')}\n"
     ),
 )
 
@@ -144,55 +132,52 @@ CLOS_TRUE = Model(
     MODEL_REPO_DEFAULT,
     enforce_labels=False,
     name="closing-TRUE",
-    instructions="You are the TRUE debater. Provide a concise closing statement.",
+    instructions="Closing remarks for TRUE.",
     input_transform=lambda ctx, claim: (
-        f"Headline: {claim}\n\n"
-        f"Initial TRUE:\n{ctx.get('Model(debater-TRUE)', '')}\n\n"
-        f"Resp1 TRUE:\n{ctx.get('Model(response1-TRUE)', '')}\n\n"
-        f"Resp2 TRUE:\n{ctx.get('Model(response2-TRUE)', '')}\n\n"
-        "Closing statement:"
+        f"Headline: {claim}\n\n{ctx.get('Model(response2-TRUE)','')}\n"
     ),
 )
 
-# ─────────────── extended-round judge ───────────────
+# Fresh arguments model
+ADDL_ARGS = Model(
+    MODEL_REPO_DEFAULT,
+    enforce_labels=False,
+    name="additional-arguments",
+    instructions="Provide new arguments after two full rounds.",
+    input_transform=lambda ctx, claim: (
+        f"Headline: {claim}\n\n"
+        f"Earlier FAKE:\n{ctx.get('Model(response2-FAKE)','')}\n\n"
+        f"Earlier TRUE:\n{ctx.get('Model(response2-TRUE)','')}\n"
+    ),
+)
+
+# Final judge after full debate
 JUDGE_EXT = Model(
     EXPLAINER_REPO,
     use_search=False,
     enforce_labels=True,
-    instructions=(
-        "You are an impartial fact-checking judge. Having read the entire "
-        "debate—including all rounds and closing remarks—output exactly one "
-        "label: FAKE or TRUE."
-    ),
+    instructions="Final judge decision after full debate. Choose FAKE or TRUE.",
     input_transform=lambda ctx, claim: (
         f"Headline: {claim}\n\n"
-        f"Initial FAKE:\n{ctx.get('Model(debater-FAKE)', '')}\n\n"
-        f"Initial TRUE:\n{ctx.get('Model(debater-TRUE)', '')}\n\n"
-        f"Resp1 FAKE:\n{ctx.get('Model(response1-FAKE)', '')}\n\n"
-        f"Resp1 TRUE:\n{ctx.get('Model(response1-TRUE)', '')}\n\n"
-        f"Resp2 FAKE:\n{ctx.get('Model(response2-FAKE)', '')}\n\n"
-        f"Resp2 TRUE:\n{ctx.get('Model(response2-TRUE)', '')}\n\n"
-        f"Closing FAKE:\n{ctx.get('Model(closing-FAKE)', '')}\n\n"
-        f"Closing TRUE:\n{ctx.get('Model(closing-TRUE)', '')}\n\n"
+        f"{ctx.get('Model(closing-FAKE)','')}\n"
+        f"{ctx.get('Model(closing-TRUE)','')}\n"
         "Label:"
     ),
     name="judge-extended",
 )
 
 
-# ─────────────── pipeline wiring ───────────────
-# Base pipeline
+# ────────────────────────── pipeline wiring ──────────────────────────
+
 P0 = Model(repo=None, input_transform=_normalize, name="normaliser")
 P0 >> BASE
 PIPE_BASE = ModelPipeline([P0])
 
-# Simple 2-way debate
 P1 = Model(repo=None, input_transform=_normalize, name="normaliser")
 P1 >> (DEB_FAKE, DEB_TRUE)
 P1 >> JUDGE
 PIPE_DEBATE = ModelPipeline([P1])
 
-# Extended debate (2 rounds + closings)
 P2 = Model(repo=None, input_transform=_normalize, name="normaliser")
 P2 >> (DEB_FAKE, DEB_TRUE)
 P2 >> (RESP1_FAKE, RESP1_TRUE)
@@ -201,14 +186,28 @@ P2 >> (CLOS_FAKE, CLOS_TRUE)
 P2 >> JUDGE_EXT
 PIPE_DEBATE_EXT = ModelPipeline([P2])
 
+P3 = Model(repo=None, input_transform=_normalize, name="normaliser")
+P3 >> (DEB_FAKE, DEB_TRUE)
+P3 >> (RESP1_FAKE, RESP1_TRUE)
+P3 >> (RESP2_FAKE, RESP2_TRUE)
+P3 >> ADDL_ARGS
+P3 >> (DEB_FAKE, DEB_TRUE)
+P3 >> (RESP1_FAKE, RESP1_TRUE)
+P3 >> (RESP2_FAKE, RESP2_TRUE)
+P3 >> (CLOS_FAKE, CLOS_TRUE)
+P3 >> JUDGE_EXT
+PIPE_DEBATE_EXT2 = ModelPipeline([P3])
+
 PIPELINES = {
     "base":             PIPE_BASE,
     "debate-2":         PIPE_DEBATE,
     "debate-extended":  PIPE_DEBATE_EXT,
+    "debate-extended2": PIPE_DEBATE_EXT2,
 }
 
 
-# ─────────────── benchmark loop ───────────────
+# ────────────────────────── benchmarking ──────────────────────────
+
 if __name__ == "__main__":
     logging.basicConfig(
         filename="benchmark.log",
@@ -227,17 +226,23 @@ if __name__ == "__main__":
 
     for name, pipe in PIPELINES.items():
         correct = 0
+        y_true = []
+        y_pred = []
+
         print(f"Evaluating pipeline: {name}")
 
         for ex in tqdm(ds, desc=name):
             claim = ex["claim"].strip()
-            ref   = _norm(ex["label"])
+            ref = _norm(ex["label"])
 
             tree, raw_pred = pipe.predict_with_label(claim)
             pred = _norm(raw_pred)
 
             if pred == ref:
                 correct += 1
+
+            y_true.append(ref)
+            y_pred.append(pred)
 
             logger.info(
                 f"Pipeline: {name}\n"
@@ -249,5 +254,13 @@ if __name__ == "__main__":
 
         accuracy = correct / len(ds)
         print(f" → accuracy: {accuracy:.3%}")
+
+        # Additional metrics
+        print("\nClassification Report:")
+        print(classification_report(y_true, y_pred, digits=4))
+
+        print("Confusion Matrix:")
+        print(confusion_matrix(y_true, y_pred, labels=["FAKE", "TRUE"]))
+        print("\n" + "-"*80 + "\n")
 
     print("Done.")
