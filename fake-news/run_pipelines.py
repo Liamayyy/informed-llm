@@ -192,11 +192,11 @@ def make_debate_ext2(root_transform) -> ModelPipeline:
 
 PIPELINES: Dict[str, ModelPipeline] = {
     "base":              make_base(_normalize),
-    "base+search":       make_base(lambda c, t: _add_web(c, _normalize(c, t))),
+    #"base+search":       make_base(lambda c, t: _add_web(c, _normalize(c, t))),
     #"debate-2":          make_debate(_normalize),
     #"debate-2+search":   make_debate(lambda c, t: _add_web(c, _normalize(c, t))),
     "debate-ext":        make_debate_ext(_normalize),
-    "debate-ext+search": make_debate_ext(lambda c, t: _add_web(c, _normalize(c, t))),
+    #"debate-ext+search": make_debate_ext(lambda c, t: _add_web(c, _normalize(c, t))),
     #"debate-ext2":       make_debate_ext2(_normalize),
     #"debate-ext2+search":make_debate_ext2(lambda c, t: _add_web(c, _normalize(c, t))),
 }
